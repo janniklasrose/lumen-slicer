@@ -37,14 +37,14 @@ double calculate_area(Vector normal, Polyline poly3D, int i, std::vector<Polylin
     // i.e. the cartesian plane normal with lowest angle to the polygon normal
 
     Vector planes[3] = {Vector(1,0,0), Vector(0,1,0), Vector(0,0,1)};
-    double absCosTheta = 1; // abs value of cos(theta), initially for 90deg
+    double absCosTheta = 0; // abs value of cos(theta), initially for 90deg
     int proj_dim;
     for( int dim = 0; dim != 3; ++dim )
     {
         Vector projection = planes[dim]; // already normalised
         Vector plane_normal = normal/sqrt(normal.squared_length());
         double absCosTheta_d = abs(projection*plane_normal); // [0,1]
-        if( absCosTheta_d < absCosTheta ) // "closer" to this plane
+        if( absCosTheta_d > absCosTheta ) // "closer" to this plane
         {
             // store
             absCosTheta = absCosTheta_d;
