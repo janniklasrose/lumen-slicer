@@ -7,4 +7,8 @@ clean:
 # compile the slicing executable
 CXXFLAGS = -O2 -std=c++11
 bin/mesh_slicer: src/mesh_slicer.cpp
-	$(CXX) $(CPPFLAGS) $< -o $@ -lCGAL -lgmp
+	$(CXX) $(CXXFLAGS) $< -o $@ -lCGAL -lgmp
+
+# convert STL to OFF using MeshLab
+%.off: %.stl
+	meshlabserver -i $< -o $@ -s bin/removeDuplicatedVertex.mlx
