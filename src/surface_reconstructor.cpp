@@ -44,6 +44,7 @@ struct CapContour
 {
     std::vector<std::size_t> ring_ids;
     Ring ring;
+    Vec3 forward_normal;
 };
 
 struct Frame
@@ -126,8 +127,17 @@ static Vec3 non_collinear_normal(const Ring& ring)
     return zero;
 }
 
-static bool make_frame(const std::vector<CapContour>& contours, Frame& frame)
+static bool make_frame(
+    const std::vector<CapContour>& contours,
+    const Vec3& frame_normal,
+    Frame& frame)
 {
+    if( squared_length(frame_normal) == 0.0 )
+    {
+        return false;
+    }
+
+    const Vec3 normal = normalized(frame_normal);
     for( std::size_t contour = 0; contour != contours.size(); ++contour )
     {
         const Ring& ring = contours[contour].ring;
@@ -135,13 +145,6 @@ static bool make_frame(const std::vector<CapContour>& contours, Frame& frame)
         {
             continue;
         }
-
-        Vec3 normal = non_collinear_normal(ring);
-        if( squared_length(normal) == 0.0 )
-        {
-            continue;
-        }
-        normal = normalized(normal);
 
         Vec3 u = {0.0, 0.0, 0.0};
         for( std::size_t i = 1; i != ring.size(); ++i )
@@ -202,6 +205,11 @@ static Ring shifted_ring(const Ring& ring, std::size_t offset, bool reversed)
     }
 
     return shifted;
+}
+
+static void reverse_ring(Ring& ring)
+{
+    std::reverse(ring.begin(), ring.end());
 }
 
 static double alignment_score(const Ring& a, const Ring& b, std::size_t offset, bool reversed)
@@ -269,6 +277,63 @@ static ContourSample make_contour_sample(
     }
 
     return sample;
+}
+
+static bool track_direction(
+    const ContourTrack& track,
+    std::size_t index,
+    Vec3& direction)
+{
+    const Vec3 center = centroid(track[index].ring);
+
+    for( std::size_t next = index + 1; next != track.size(); ++next )
+    {
+        direction = centroid(track[next].ring) - center;
+        if( squared_length(direction) != 0.0 )
+        {
+            return true;
+        }
+    }
+
+    for( std::size_t previous = index; previous != 0; --previous )
+    {
+        direction = center - centroid(track[previous - 1].ring);
+        if( squared_length(direction) != 0.0 )
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void normalize_track_winding(ContourTrack& track)
+{
+    for( std::size_t t = 0; t != track.size(); ++t )
+    {
+        Vec3 direction;
+        if( !track_direction(track, t, direction) )
+        {
+            throw std::runtime_error("Cannot infer contour winding from coincident slice centers.");
+        }
+
+        const Vec3 normal = non_collinear_normal(track[t].ring);
+        if( squared_length(normal) == 0.0 )
+        {
+            throw std::runtime_error("Cannot infer contour winding from a degenerate contour.");
+        }
+
+        const double winding = dot(normal, direction);
+        if( winding == 0.0 )
+        {
+            throw std::runtime_error("Cannot infer contour winding from a contour perpendicular to slice advance.");
+        }
+
+        if( winding * static_cast<double>(area_class(track[t].area)) < 0.0 )
+        {
+            reverse_ring(track[t].ring);
+        }
+    }
 }
 
 static double contour_match_score(const ContourSample& previous, const ContourSample& current)
@@ -430,6 +495,16 @@ static std::size_t cap_vertex_id(
     return vertex_id;
 }
 
+static Vec3 cap_forward_normal(const std::vector<CapContour>& contours)
+{
+    Vec3 normal = {0.0, 0.0, 0.0};
+    for( std::size_t i = 0; i != contours.size(); ++i )
+    {
+        normal = normal + contours[i].forward_normal;
+    }
+    return normal;
+}
+
 static void add_cap(
     const std::vector<CapContour>& contours,
     bool reverse,
@@ -441,7 +516,7 @@ static void add_cap(
     }
 
     Frame frame;
-    if( !make_frame(contours, frame) )
+    if( !make_frame(contours, cap_forward_normal(contours), frame) )
     {
         throw std::runtime_error("Failed to construct cap frame.");
     }
@@ -517,7 +592,7 @@ static void add_surface_between(
         }
         else
         {
-            mesh.faces.push_back({{a_ids[i], b_ids[j], b_ids[jnext]}});
+            mesh.faces.push_back({{a_ids[i], b_ids[jnext], b_ids[j]}});
             j = jnext;
             ++advanced_b;
         }
@@ -571,11 +646,12 @@ int main(int argc, char* argv[])
 
         for( std::size_t contour = 0; contour != contour_tracks.size(); ++contour )
         {
-            const ContourTrack& track = contour_tracks[contour];
+            ContourTrack& track = contour_tracks[contour];
             if( track.size() < 2 )
             {
                 continue;
             }
+            normalize_track_winding(track);
 
             std::vector<std::vector<std::size_t> > ring_ids;
             ring_ids.reserve(track.size());
@@ -587,6 +663,10 @@ int main(int argc, char* argv[])
             CapContour front_cap;
             front_cap.ring_ids = ring_ids.front();
             front_cap.ring = track.front().ring;
+            if( !track_direction(track, 0, front_cap.forward_normal) )
+            {
+                throw std::runtime_error("Cannot infer front cap normal.");
+            }
             start_caps[track.front().slice_index].push_back(front_cap);
             for( std::size_t t = 0; t + 1 != track.size(); ++t )
             {
@@ -595,6 +675,10 @@ int main(int argc, char* argv[])
             CapContour back_cap;
             back_cap.ring_ids = ring_ids.back();
             back_cap.ring = track.back().ring;
+            if( !track_direction(track, track.size() - 1, back_cap.forward_normal) )
+            {
+                throw std::runtime_error("Cannot infer back cap normal.");
+            }
             end_caps[track.back().slice_index].push_back(back_cap);
         }
 
