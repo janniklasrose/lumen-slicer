@@ -60,6 +60,12 @@ struct MeshOut
     std::vector<std::array<std::size_t, 3> > faces;
 };
 
+struct Options
+{
+    bool refine = false;
+    double point_tolerance = 1e-12;
+};
+
 static Vec3 operator+(const Vec3& a, const Vec3& b)
 {
     return Vec3{a.x + b.x, a.y + b.y, a.z + b.z};
@@ -101,9 +107,8 @@ static Vec3 normalized(const Vec3& a)
     return a * (1.0 / length);
 }
 
-static bool same_point(const Vec3& a, const Vec3& b)
+static bool same_point(const Vec3& a, const Vec3& b, double tolerance)
 {
-    const double tolerance = 1e-12;
     return squared_length(a - b) <= tolerance * tolerance;
 }
 
@@ -146,10 +151,10 @@ static std::vector<Slice> read_slices(const std::string& path)
     return slices;
 }
 
-static std::vector<Vec3> unique_ring(const Curve& curve)
+static std::vector<Vec3> unique_ring(const Curve& curve, double point_tolerance)
 {
     std::vector<Vec3> ring = curve.points;
-    while(ring.size() > 1 && same_point(ring.front(), ring.back()))
+    while(ring.size() > 1 && same_point(ring.front(), ring.back(), point_tolerance))
     {
         ring.pop_back();
     }
@@ -183,12 +188,12 @@ static Vec3 non_collinear_normal(const std::vector<Vec3>& ring)
     return Vec3{0.0, 0.0, 0.0};
 }
 
-static Vec3 polygon_normal(const std::vector<Curve>& curves)
+static Vec3 polygon_normal(const std::vector<Curve>& curves, double point_tolerance)
 {
     Vec3 normal{0.0, 0.0, 0.0};
     for(const Curve& curve : curves)
     {
-        const std::vector<Vec3> ring = unique_ring(curve);
+        const std::vector<Vec3> ring = unique_ring(curve, point_tolerance);
         if(ring.size() < 3) continue;
 
         const Vec3 current = ring_normal(ring);
@@ -197,12 +202,12 @@ static Vec3 polygon_normal(const std::vector<Curve>& curves)
     return normal;
 }
 
-static bool make_frame(const Slice& slice, Frame& frame)
+static bool make_frame(const Slice& slice, double point_tolerance, Frame& frame)
 {
-    const Vec3 slice_normal = polygon_normal(slice.curves);
+    const Vec3 slice_normal = polygon_normal(slice.curves, point_tolerance);
     for(const Curve& curve : slice.curves)
     {
-        const std::vector<Vec3> ring = unique_ring(curve);
+        const std::vector<Vec3> ring = unique_ring(curve, point_tolerance);
         if(ring.size() < 3) continue;
 
         const Vec3 curve_normal = non_collinear_normal(ring);
@@ -244,9 +249,9 @@ static Vec3 lift(const Frame& frame, const Point2& p)
     return frame.origin + frame.u * p.x() + frame.v * p.y();
 }
 
-static void insert_curve(CDT& cdt, const Frame& frame, const Curve& curve)
+static void insert_curve(CDT& cdt, const Frame& frame, const Curve& curve, double point_tolerance)
 {
-    const std::vector<Vec3> ring = unique_ring(curve);
+    const std::vector<Vec3> ring = unique_ring(curve, point_tolerance);
     if(ring.size() < 3) return;
 
     std::vector<CDT::Vertex_handle> handles;
@@ -293,12 +298,12 @@ static void append_domain_faces(const CDT& cdt, const Frame& frame, MeshOut& mes
     }
 }
 
-static void tessellate_slice(const Slice& slice, bool refine, MeshOut& mesh)
+static void tessellate_slice(const Slice& slice, const Options& options, MeshOut& mesh)
 {
     if(slice.curves.empty()) return;
 
     Frame frame;
-    if(!make_frame(slice, frame))
+    if(!make_frame(slice, options.point_tolerance, frame))
     {
         std::cerr << "Warning: skipping degenerate slice" << std::endl;
         return;
@@ -307,7 +312,7 @@ static void tessellate_slice(const Slice& slice, bool refine, MeshOut& mesh)
     CDT cdt;
     for(const Curve& curve : slice.curves)
     {
-        insert_curve(cdt, frame, curve);
+        insert_curve(cdt, frame, curve, options.point_tolerance);
     }
 
     if(cdt.dimension() != 2)
@@ -317,7 +322,7 @@ static void tessellate_slice(const Slice& slice, bool refine, MeshOut& mesh)
     }
 
     CGAL::mark_domain_in_triangulation(cdt);
-    if(refine)
+    if(options.refine)
     {
         CGAL::refine_Delaunay_mesh_2(
             cdt,
@@ -348,12 +353,27 @@ static void write_off(const std::string& path, const MeshOut& mesh)
 
 static void usage(const char* program)
 {
-    std::cerr << "Usage: " << program << " slices.dat slices.off [--refine]\n";
+    std::cerr << "Usage: " << program << " slices.dat slices.off [--refine]"
+              << " [--point-tolerance value]\n";
+}
+
+static bool parse_positive_double(const std::string& value, double& result)
+{
+    try
+    {
+        std::size_t consumed = 0;
+        result = std::stod(value, &consumed);
+        return consumed == value.size() && std::isfinite(result) && result > 0.0;
+    }
+    catch(const std::exception&)
+    {
+        return false;
+    }
 }
 
 int main(int argc, char* argv[])
 {
-    bool refine = false;
+    Options options;
     std::vector<std::string> paths;
 
     for(int i = 1; i != argc; ++i)
@@ -361,7 +381,16 @@ int main(int argc, char* argv[])
         const std::string arg(argv[i]);
         if(arg == "--refine")
         {
-            refine = true;
+            options.refine = true;
+        }
+        else if(arg == "--point-tolerance")
+        {
+            if(i + 1 == argc || !parse_positive_double(argv[++i], options.point_tolerance))
+            {
+                usage(argv[0]);
+                std::cerr << "Invalid point tolerance" << std::endl;
+                return 1;
+            }
         }
         else if(!arg.empty() && arg[0] == '-')
         {
@@ -387,7 +416,7 @@ int main(int argc, char* argv[])
         MeshOut mesh;
         for(const Slice& slice : slices)
         {
-            tessellate_slice(slice, refine, mesh);
+            tessellate_slice(slice, options, mesh);
         }
         write_off(paths[1], mesh);
     }
