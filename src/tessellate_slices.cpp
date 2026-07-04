@@ -9,6 +9,8 @@
 #include <CGAL/Delaunay_mesh_size_criteria_2.h>
 #include <CGAL/mark_domain_in_triangulation.h>
 
+#include "geometry.h"
+
 #include <array>
 #include <cmath>
 #include <fstream>
@@ -28,13 +30,6 @@ using FaceBase = CGAL::Delaunay_mesh_face_base_2<K>;
 using TriangulationData = CGAL::Triangulation_data_structure_2<VertexBase, FaceBase>;
 using CDT = CGAL::Constrained_Delaunay_triangulation_2<K, TriangulationData, CGAL::Exact_predicates_tag>;
 using Criteria = CGAL::Delaunay_mesh_size_criteria_2<CDT>;
-
-struct Vec3
-{
-    double x;
-    double y;
-    double z;
-};
 
 struct Curve
 {
@@ -65,52 +60,6 @@ struct Options
     bool refine = false;
     double point_tolerance = 1e-12;
 };
-
-static Vec3 operator+(const Vec3& a, const Vec3& b)
-{
-    return Vec3{a.x + b.x, a.y + b.y, a.z + b.z};
-}
-
-static Vec3 operator-(const Vec3& a, const Vec3& b)
-{
-    return Vec3{a.x - b.x, a.y - b.y, a.z - b.z};
-}
-
-static Vec3 operator*(const Vec3& a, double s)
-{
-    return Vec3{a.x * s, a.y * s, a.z * s};
-}
-
-static double dot(const Vec3& a, const Vec3& b)
-{
-    return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-
-static Vec3 cross(const Vec3& a, const Vec3& b)
-{
-    return Vec3{
-        a.y * b.z - a.z * b.y,
-        a.z * b.x - a.x * b.z,
-        a.x * b.y - a.y * b.x
-    };
-}
-
-static double squared_length(const Vec3& a)
-{
-    return dot(a, a);
-}
-
-static Vec3 normalized(const Vec3& a)
-{
-    const double length = std::sqrt(squared_length(a));
-    if(length == 0.0) throw std::runtime_error("zero-length vector");
-    return a * (1.0 / length);
-}
-
-static bool same_point(const Vec3& a, const Vec3& b, double tolerance)
-{
-    return squared_length(a - b) <= tolerance * tolerance;
-}
 
 static std::vector<Slice> read_slices(const std::string& path)
 {
