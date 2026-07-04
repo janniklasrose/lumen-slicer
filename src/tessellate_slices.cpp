@@ -156,6 +156,33 @@ static std::vector<Vec3> unique_ring(const Curve& curve)
     return ring;
 }
 
+static Vec3 ring_normal(const std::vector<Vec3>& ring)
+{
+    Vec3 normal{0.0, 0.0, 0.0};
+    for(std::size_t i = 0; i != ring.size(); ++i)
+    {
+        const Vec3& current = ring[i];
+        const Vec3& next = ring[(i + 1) % ring.size()];
+        normal.x += (current.y - next.y) * (current.z + next.z);
+        normal.y += (current.z - next.z) * (current.x + next.x);
+        normal.z += (current.x - next.x) * (current.y + next.y);
+    }
+    return normal;
+}
+
+static Vec3 non_collinear_normal(const std::vector<Vec3>& ring)
+{
+    Vec3 normal = ring_normal(ring);
+    if(squared_length(normal) != 0.0) return normal;
+
+    for(std::size_t i = 1; i + 1 < ring.size(); ++i)
+    {
+        normal = cross(ring[i] - ring[0], ring[i + 1] - ring[0]);
+        if(squared_length(normal) != 0.0) return normal;
+    }
+    return Vec3{0.0, 0.0, 0.0};
+}
+
 static Vec3 polygon_normal(const std::vector<Curve>& curves)
 {
     Vec3 normal{0.0, 0.0, 0.0};
@@ -164,33 +191,27 @@ static Vec3 polygon_normal(const std::vector<Curve>& curves)
         const std::vector<Vec3> ring = unique_ring(curve);
         if(ring.size() < 3) continue;
 
-        for(std::size_t i = 0; i != ring.size(); ++i)
-        {
-            const Vec3& current = ring[i];
-            const Vec3& next = ring[(i + 1) % ring.size()];
-            normal.x += (current.y - next.y) * (current.z + next.z);
-            normal.y += (current.z - next.z) * (current.x + next.x);
-            normal.z += (current.x - next.x) * (current.y + next.y);
-        }
+        const Vec3 current = ring_normal(ring);
+        normal = normal + current;
     }
     return normal;
 }
 
-static Frame make_frame(const Slice& slice)
+static bool make_frame(const Slice& slice, Frame& frame)
 {
+    const Vec3 slice_normal = polygon_normal(slice.curves);
     for(const Curve& curve : slice.curves)
     {
         const std::vector<Vec3> ring = unique_ring(curve);
         if(ring.size() < 3) continue;
 
-        Vec3 normal = polygon_normal(slice.curves);
+        const Vec3 curve_normal = non_collinear_normal(ring);
+        if(squared_length(curve_normal) == 0.0) continue;
+
+        Vec3 normal = slice_normal;
         if(squared_length(normal) == 0.0)
         {
-            for(std::size_t i = 1; i + 1 < ring.size(); ++i)
-            {
-                normal = cross(ring[i] - ring[0], ring[i + 1] - ring[0]);
-                if(squared_length(normal) > 0.0) break;
-            }
+            normal = curve_normal;
         }
         normal = normalized(normal);
 
@@ -201,13 +222,15 @@ static Frame make_frame(const Slice& slice)
             u = u - normal * dot(u, normal);
             if(squared_length(u) > 0.0) break;
         }
+        if(squared_length(u) == 0.0) continue;
         u = normalized(u);
         const Vec3 v = normalized(cross(normal, u));
 
-        return Frame{ring[0], u, v};
+        frame = Frame{ring[0], u, v};
+        return true;
     }
 
-    throw std::runtime_error("slice has no non-degenerate curve");
+    return false;
 }
 
 static Point2 project(const Frame& frame, const Vec3& p)
@@ -274,7 +297,13 @@ static void tessellate_slice(const Slice& slice, bool refine, MeshOut& mesh)
 {
     if(slice.curves.empty()) return;
 
-    const Frame frame = make_frame(slice);
+    Frame frame;
+    if(!make_frame(slice, frame))
+    {
+        std::cerr << "Warning: skipping degenerate slice" << std::endl;
+        return;
+    }
+
     CDT cdt;
     for(const Curve& curve : slice.curves)
     {
