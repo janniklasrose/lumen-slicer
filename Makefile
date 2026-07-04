@@ -4,7 +4,7 @@ default: bin/mesh_slicer
 
 .PHONY: clean
 clean:
-	$(RM) -f bin/mesh_slicer
+	$(RM) bin/mesh_slicer
 
 # compile the executables
 CGAL_INSTALL_PREFIX ?= /opt/homebrew
