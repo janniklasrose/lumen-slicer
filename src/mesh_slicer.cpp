@@ -210,7 +210,7 @@ int main(int argc, char* argv[])
         // find polylines
         std::vector<Polyline> polylines; // there might be multiple
         slicer(Plane(origin, normal), std::back_inserter(polylines));
-        outstream << polylines.size() << std::endl; // this many slices
+        outstream << polylines.size() << std::endl; // this many curves in the slice
         for( std::size_t i = 0; i != polylines.size(); ++i )
         {
             Polyline poly = polylines.at(i); // current
