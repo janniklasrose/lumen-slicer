@@ -7,9 +7,13 @@
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/mark_domain_in_triangulation.h>
 
+#include "geometry.h"
+#include "slice.h"
+
 #include <algorithm>
+#include <array>
 #include <cmath>
-#include <fstream>
+#include <exception>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -25,30 +29,7 @@ using FaceBase = CGAL::Delaunay_mesh_face_base_2<K>;
 using TriangulationData = CGAL::Triangulation_data_structure_2<VertexBase, FaceBase>;
 using CDT = CGAL::Constrained_Delaunay_triangulation_2<K, TriangulationData, CGAL::Exact_predicates_tag>;
 
-struct Point
-{
-    double x;
-    double y;
-    double z;
-};
-
-struct Face
-{
-    std::vector<std::size_t> vertices;
-};
-
-using Ring = std::vector<Point>;
-
-struct Contour
-{
-    double area;
-    Ring ring;
-};
-
-struct Slice
-{
-    std::vector<Contour> contours;
-};
+using Ring = std::vector<Vec3>;
 
 struct ContourSample
 {
@@ -67,9 +48,9 @@ struct CapContour
 
 struct Frame
 {
-    Point origin;
-    Point u;
-    Point v;
+    Vec3 origin;
+    Vec3 u;
+    Vec3 v;
 };
 
 struct FormatError : public std::runtime_error
@@ -80,89 +61,14 @@ struct FormatError : public std::runtime_error
     }
 };
 
-static Point operator+(const Point& a, const Point& b)
+static double squared_distance(const Vec3& a, const Vec3& b)
 {
-    Point result = {a.x + b.x, a.y + b.y, a.z + b.z};
-    return result;
+    return squared_length(a - b);
 }
 
-static Point operator-(const Point& a, const Point& b)
+static Vec3 centroid(const Ring& ring)
 {
-    Point result = {a.x - b.x, a.y - b.y, a.z - b.z};
-    return result;
-}
-
-static Point operator*(const Point& a, double scale)
-{
-    Point result = {a.x * scale, a.y * scale, a.z * scale};
-    return result;
-}
-
-static double dot(const Point& a, const Point& b)
-{
-    return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-
-static Point cross(const Point& a, const Point& b)
-{
-    Point result = {
-        a.y * b.z - a.z * b.y,
-        a.z * b.x - a.x * b.z,
-        a.x * b.y - a.y * b.x
-    };
-    return result;
-}
-
-static double squared_distance(const Point& a, const Point& b)
-{
-    const double dx = a.x - b.x;
-    const double dy = a.y - b.y;
-    const double dz = a.z - b.z;
-    return dx * dx + dy * dy + dz * dz;
-}
-
-static double squared_length(const Point& a)
-{
-    return dot(a, a);
-}
-
-static Point normalized(const Point& a)
-{
-    const double length = std::sqrt(squared_length(a));
-    if( length == 0.0 )
-    {
-        throw std::runtime_error("Zero-length vector.");
-    }
-    return a * (1.0 / length);
-}
-
-static bool same_point(const Point& a, const Point& b)
-{
-    const double eps = 1e-12;
-    return squared_distance(a, b) <= eps * eps;
-}
-
-static void remove_duplicate_endpoint(Ring& ring)
-{
-    if( ring.size() > 1 && same_point(ring.front(), ring.back()) )
-    {
-        ring.pop_back();
-    }
-}
-
-static std::size_t read_count(std::istream& in, const std::string& description)
-{
-    long long value = 0;
-    if( !(in >> value) || value < 0 )
-    {
-        throw FormatError("Invalid " + description + ".");
-    }
-    return static_cast<std::size_t>(value);
-}
-
-static Point centroid(const Ring& ring)
-{
-    Point c = {0.0, 0.0, 0.0};
+    Vec3 c = {0.0, 0.0, 0.0};
     for( std::size_t i = 0; i != ring.size(); ++i )
     {
         c.x += ring[i].x;
@@ -176,13 +82,23 @@ static Point centroid(const Ring& ring)
     return c;
 }
 
-static Point ring_normal(const Ring& ring)
+static Ring unique_ring(const Curve& curve)
 {
-    Point normal = {0.0, 0.0, 0.0};
+    Ring ring = curve.points;
+    while( ring.size() > 1 && same_point(ring.front(), ring.back(), 1e-12) )
+    {
+        ring.pop_back();
+    }
+    return ring;
+}
+
+static Vec3 ring_normal(const Ring& ring)
+{
+    Vec3 normal = {0.0, 0.0, 0.0};
     for( std::size_t i = 0; i != ring.size(); ++i )
     {
-        const Point& current = ring[i];
-        const Point& next = ring[(i + 1) % ring.size()];
+        const Vec3& current = ring[i];
+        const Vec3& next = ring[(i + 1) % ring.size()];
         normal.x += (current.y - next.y) * (current.z + next.z);
         normal.y += (current.z - next.z) * (current.x + next.x);
         normal.z += (current.x - next.x) * (current.y + next.y);
@@ -190,9 +106,9 @@ static Point ring_normal(const Ring& ring)
     return normal;
 }
 
-static Point non_collinear_normal(const Ring& ring)
+static Vec3 non_collinear_normal(const Ring& ring)
 {
-    Point normal = ring_normal(ring);
+    Vec3 normal = ring_normal(ring);
     if( squared_length(normal) != 0.0 )
     {
         return normal;
@@ -206,7 +122,7 @@ static Point non_collinear_normal(const Ring& ring)
             return normal;
         }
     }
-    Point zero = {0.0, 0.0, 0.0};
+    Vec3 zero = {0.0, 0.0, 0.0};
     return zero;
 }
 
@@ -220,14 +136,14 @@ static bool make_frame(const std::vector<CapContour>& contours, Frame& frame)
             continue;
         }
 
-        Point normal = non_collinear_normal(ring);
+        Vec3 normal = non_collinear_normal(ring);
         if( squared_length(normal) == 0.0 )
         {
             continue;
         }
         normal = normalized(normal);
 
-        Point u = {0.0, 0.0, 0.0};
+        Vec3 u = {0.0, 0.0, 0.0};
         for( std::size_t i = 1; i != ring.size(); ++i )
         {
             u = ring[i] - ring[0];
@@ -252,13 +168,13 @@ static bool make_frame(const std::vector<CapContour>& contours, Frame& frame)
     return false;
 }
 
-static Point2 project(const Frame& frame, const Point& point)
+static Point2 project(const Frame& frame, const Vec3& point)
 {
-    const Point offset = point - frame.origin;
+    const Vec3 offset = point - frame.origin;
     return Point2(dot(offset, frame.u), dot(offset, frame.v));
 }
 
-static Point lift(const Frame& frame, const Point2& point)
+static Vec3 lift(const Frame& frame, const Point2& point)
 {
     return frame.origin + frame.u * point.x() + frame.v * point.y();
 }
@@ -334,10 +250,31 @@ static int area_class(double area)
     return area < 0.0 ? -1 : 1;
 }
 
-static double contour_match_score(const ContourSample& previous, const Contour& current)
+static ContourSample make_contour_sample(
+    std::size_t slice_index,
+    std::size_t contour_index,
+    const Curve& curve)
 {
-    const Point previous_center = centroid(previous.ring);
-    const Point current_center = centroid(current.ring);
+    ContourSample sample;
+    sample.slice_index = slice_index;
+    sample.area = curve.area;
+    sample.ring = unique_ring(curve);
+
+    if( sample.ring.size() < 3 )
+    {
+        std::ostringstream msg;
+        msg << "Contour " << contour_index << " in slice " << slice_index
+            << " has fewer than 3 points.";
+        throw FormatError(msg.str());
+    }
+
+    return sample;
+}
+
+static double contour_match_score(const ContourSample& previous, const ContourSample& current)
+{
+    const Vec3 previous_center = centroid(previous.ring);
+    const Vec3 current_center = centroid(current.ring);
     const double previous_radius = std::sqrt(std::fabs(previous.area));
     const double current_radius = std::sqrt(std::fabs(current.area));
     const double scale = std::max(std::max(previous_radius, current_radius), 1e-12);
@@ -345,61 +282,6 @@ static double contour_match_score(const ContourSample& previous, const Contour& 
     const double radius_delta = previous_radius - current_radius;
     const double area_score = (radius_delta * radius_delta) / (scale * scale);
     return center_score + area_score;
-}
-
-static std::vector<Slice> read_slices(const std::string& path)
-{
-    std::ifstream in(path.c_str());
-    if( !in )
-    {
-        throw FormatError("Invalid slice file.");
-    }
-
-    const std::size_t nslices = read_count(in, "slice count");
-
-    std::vector<Slice> slices(nslices);
-    for( std::size_t t = 0; t != nslices; ++t )
-    {
-        const std::size_t ncontours = read_count(in, "contour count");
-
-        slices[t].contours.reserve(ncontours);
-        for( std::size_t c = 0; c != ncontours; ++c )
-        {
-            double area = 0.0;
-            in >> area;
-            if( !in )
-            {
-                throw FormatError("Invalid contour area.");
-            }
-            const std::size_t npoints = read_count(in, "point count");
-
-            Contour contour;
-            contour.area = area;
-            contour.ring.reserve(npoints);
-            for( std::size_t i = 0; i != npoints; ++i )
-            {
-                Point p;
-                in >> p.x >> p.y >> p.z;
-                if( !in )
-                {
-                    throw std::runtime_error("Failed to read contour point.");
-                }
-                contour.ring.push_back(p);
-            }
-
-            remove_duplicate_endpoint(contour.ring);
-            if( contour.ring.size() < 3 )
-            {
-                std::ostringstream msg;
-                msg << "Contour " << c << " in slice " << t << " has fewer than 3 points.";
-                throw FormatError(msg.str());
-            }
-
-            slices[t].contours.push_back(contour);
-        }
-    }
-
-    return slices;
 }
 
 static std::vector<ContourTrack> group_contours(const std::vector<Slice>& slices)
@@ -416,19 +298,26 @@ static std::vector<ContourTrack> group_contours(const std::vector<Slice>& slices
 
     for( std::size_t t = 0; t != slices.size(); ++t )
     {
-        const std::vector<Contour>& contours = slices[t].contours;
+        const std::vector<Curve>& curves = slices[t].curves;
+        std::vector<ContourSample> samples;
+        samples.reserve(curves.size());
+        for( std::size_t contour = 0; contour != curves.size(); ++contour )
+        {
+            samples.push_back(make_contour_sample(t, contour, curves[contour]));
+        }
+
         std::vector<Candidate> candidates;
         for( std::size_t active = 0; active != active_tracks.size(); ++active )
         {
             const ContourSample& previous = tracks[active_tracks[active]].back();
-            for( std::size_t contour = 0; contour != contours.size(); ++contour )
+            for( std::size_t contour = 0; contour != samples.size(); ++contour )
             {
-                if( area_class(previous.area) != area_class(contours[contour].area) )
+                if( area_class(previous.area) != area_class(samples[contour].area) )
                 {
                     continue;
                 }
                 Candidate candidate;
-                candidate.score = contour_match_score(previous, contours[contour]);
+                candidate.score = contour_match_score(previous, samples[contour]);
                 candidate.active_index = active;
                 candidate.contour_index = contour;
                 candidates.push_back(candidate);
@@ -442,7 +331,7 @@ static std::vector<ContourTrack> group_contours(const std::vector<Slice>& slices
             });
 
         std::vector<bool> used_active(active_tracks.size(), false);
-        std::vector<bool> used_contours(contours.size(), false);
+        std::vector<bool> used_contours(curves.size(), false);
         std::vector<std::size_t> next_active_tracks;
 
         for( std::size_t i = 0; i != candidates.size(); ++i )
@@ -455,12 +344,12 @@ static std::vector<ContourTrack> group_contours(const std::vector<Slice>& slices
 
             const std::size_t track_index = active_tracks[candidate.active_index];
             const ContourSample& previous = tracks[track_index].back();
-            const Contour& contour = contours[candidate.contour_index];
+            const ContourSample& candidate_sample = samples[candidate.contour_index];
 
             ContourSample sample;
             sample.slice_index = t;
-            sample.area = contour.area;
-            sample.ring = best_aligned_ring(previous.ring, contour.ring);
+            sample.area = candidate_sample.area;
+            sample.ring = best_aligned_ring(previous.ring, candidate_sample.ring);
             tracks[track_index].push_back(sample);
 
             used_active[candidate.active_index] = true;
@@ -468,7 +357,7 @@ static std::vector<ContourTrack> group_contours(const std::vector<Slice>& slices
             next_active_tracks.push_back(track_index);
         }
 
-        for( std::size_t contour = 0; contour != contours.size(); ++contour )
+        for( std::size_t contour = 0; contour != samples.size(); ++contour )
         {
             if( used_contours[contour] )
             {
@@ -476,11 +365,7 @@ static std::vector<ContourTrack> group_contours(const std::vector<Slice>& slices
             }
 
             ContourTrack track;
-            ContourSample sample;
-            sample.slice_index = t;
-            sample.area = contours[contour].area;
-            sample.ring = contours[contour].ring;
-            track.push_back(sample);
+            track.push_back(samples[contour]);
             tracks.push_back(track);
             next_active_tracks.push_back(tracks.size() - 1);
         }
@@ -493,14 +378,14 @@ static std::vector<ContourTrack> group_contours(const std::vector<Slice>& slices
 
 static std::vector<std::size_t> append_ring_vertices(
     const Ring& ring,
-    std::vector<Point>& vertices)
+    MeshOut& mesh)
 {
     std::vector<std::size_t> ids;
     ids.reserve(ring.size());
     for( std::size_t i = 0; i != ring.size(); ++i )
     {
-        ids.push_back(vertices.size());
-        vertices.push_back(ring[i]);
+        ids.push_back(mesh.vertices.size());
+        mesh.vertices.push_back(ring[i]);
     }
     return ids;
 }
@@ -531,7 +416,7 @@ static std::size_t cap_vertex_id(
     const CDT::Vertex_handle& vertex,
     const Frame& frame,
     std::map<CDT::Vertex_handle, std::size_t>& vertex_ids,
-    std::vector<Point>& vertices)
+    MeshOut& mesh)
 {
     std::map<CDT::Vertex_handle, std::size_t>::const_iterator found = vertex_ids.find(vertex);
     if( found != vertex_ids.end() )
@@ -539,8 +424,8 @@ static std::size_t cap_vertex_id(
         return found->second;
     }
 
-    const std::size_t vertex_id = vertices.size();
-    vertices.push_back(lift(frame, vertex->point()));
+    const std::size_t vertex_id = mesh.vertices.size();
+    mesh.vertices.push_back(lift(frame, vertex->point()));
     vertex_ids[vertex] = vertex_id;
     return vertex_id;
 }
@@ -548,8 +433,7 @@ static std::size_t cap_vertex_id(
 static void add_cap(
     const std::vector<CapContour>& contours,
     bool reverse,
-    std::vector<Point>& vertices,
-    std::vector<Face>& faces)
+    MeshOut& mesh)
 {
     if( contours.empty() )
     {
@@ -584,20 +468,24 @@ static void add_cap(
             continue;
         }
 
-        Face output;
+        std::array<std::size_t, 3> output;
         if( reverse )
         {
-            output.vertices.push_back(cap_vertex_id(face->vertex(0), frame, vertex_ids, vertices));
-            output.vertices.push_back(cap_vertex_id(face->vertex(2), frame, vertex_ids, vertices));
-            output.vertices.push_back(cap_vertex_id(face->vertex(1), frame, vertex_ids, vertices));
+            output = {{
+                cap_vertex_id(face->vertex(0), frame, vertex_ids, mesh),
+                cap_vertex_id(face->vertex(2), frame, vertex_ids, mesh),
+                cap_vertex_id(face->vertex(1), frame, vertex_ids, mesh)
+            }};
         }
         else
         {
-            output.vertices.push_back(cap_vertex_id(face->vertex(0), frame, vertex_ids, vertices));
-            output.vertices.push_back(cap_vertex_id(face->vertex(1), frame, vertex_ids, vertices));
-            output.vertices.push_back(cap_vertex_id(face->vertex(2), frame, vertex_ids, vertices));
+            output = {{
+                cap_vertex_id(face->vertex(0), frame, vertex_ids, mesh),
+                cap_vertex_id(face->vertex(1), frame, vertex_ids, mesh),
+                cap_vertex_id(face->vertex(2), frame, vertex_ids, mesh)
+            }};
         }
-        faces.push_back(output);
+        mesh.faces.push_back(output);
     }
 }
 
@@ -606,7 +494,7 @@ static void add_surface_between(
     const Ring& a,
     const std::vector<std::size_t>& b_ids,
     const Ring& b,
-    std::vector<Face>& faces)
+    MeshOut& mesh)
 {
     std::size_t i = 0;
     std::size_t j = 0;
@@ -623,52 +511,40 @@ static void add_surface_between(
         if( must_advance_a ||
             ( !must_advance_b && squared_distance(a[inext], b[j]) <= squared_distance(a[i], b[jnext]) ) )
         {
-            Face face;
-            face.vertices.push_back(a_ids[i]);
-            face.vertices.push_back(a_ids[inext]);
-            face.vertices.push_back(b_ids[j]);
-            faces.push_back(face);
+            mesh.faces.push_back({{a_ids[i], a_ids[inext], b_ids[j]}});
             i = inext;
             ++advanced_a;
         }
         else
         {
-            Face face;
-            face.vertices.push_back(a_ids[i]);
-            face.vertices.push_back(b_ids[j]);
-            face.vertices.push_back(b_ids[jnext]);
-            faces.push_back(face);
+            mesh.faces.push_back({{a_ids[i], b_ids[j], b_ids[jnext]}});
             j = jnext;
             ++advanced_b;
         }
     }
 }
 
-static void write_off(
-    const std::string& path,
-    const std::vector<Point>& vertices,
-    const std::vector<Face>& faces)
+static std::vector<Slice> load_slices(const std::string& path)
 {
-    std::ofstream out(path.c_str());
-    if( !out )
+    try
     {
-        throw FormatError("Invalid output file.");
+        return read_slices(path);
     }
+    catch( const std::exception& e )
+    {
+        throw FormatError(e.what());
+    }
+}
 
-    out << "OFF\n";
-    out << vertices.size() << " " << faces.size() << " 0\n";
-    for( std::size_t i = 0; i != vertices.size(); ++i )
+static void write_mesh(const std::string& path, const MeshOut& mesh)
+{
+    try
     {
-        out << vertices[i].x << " " << vertices[i].y << " " << vertices[i].z << "\n";
+        write_off(path, mesh);
     }
-    for( std::size_t i = 0; i != faces.size(); ++i )
+    catch( const std::exception& e )
     {
-        out << faces[i].vertices.size();
-        for( std::size_t j = 0; j != faces[i].vertices.size(); ++j )
-        {
-            out << " " << faces[i].vertices[j];
-        }
-        out << "\n";
+        throw FormatError(e.what());
     }
 }
 
@@ -686,11 +562,10 @@ int main(int argc, char* argv[])
 
     try
     {
-        std::vector<Slice> slices = read_slices(argv[1]);
+        std::vector<Slice> slices = load_slices(argv[1]);
         std::vector<ContourTrack> contour_tracks = group_contours(slices);
 
-        std::vector<Point> vertices;
-        std::vector<Face> faces;
+        MeshOut mesh;
         std::map<std::size_t, std::vector<CapContour> > start_caps;
         std::map<std::size_t, std::vector<CapContour> > end_caps;
 
@@ -706,7 +581,7 @@ int main(int argc, char* argv[])
             ring_ids.reserve(track.size());
             for( std::size_t t = 0; t != track.size(); ++t )
             {
-                ring_ids.push_back(append_ring_vertices(track[t].ring, vertices));
+                ring_ids.push_back(append_ring_vertices(track[t].ring, mesh));
             }
 
             CapContour front_cap;
@@ -715,7 +590,7 @@ int main(int argc, char* argv[])
             start_caps[track.front().slice_index].push_back(front_cap);
             for( std::size_t t = 0; t + 1 != track.size(); ++t )
             {
-                add_surface_between(ring_ids[t], track[t].ring, ring_ids[t + 1], track[t + 1].ring, faces);
+                add_surface_between(ring_ids[t], track[t].ring, ring_ids[t + 1], track[t + 1].ring, mesh);
             }
             CapContour back_cap;
             back_cap.ring_ids = ring_ids.back();
@@ -727,21 +602,21 @@ int main(int argc, char* argv[])
              cap != start_caps.end();
              ++cap )
         {
-            add_cap(cap->second, true, vertices, faces);
+            add_cap(cap->second, true, mesh);
         }
         for( std::map<std::size_t, std::vector<CapContour> >::const_iterator cap = end_caps.begin();
              cap != end_caps.end();
              ++cap )
         {
-            add_cap(cap->second, false, vertices, faces);
+            add_cap(cap->second, false, mesh);
         }
 
-        if( faces.empty() )
+        if( mesh.faces.empty() )
         {
             throw std::runtime_error("At least two slices with matching contour indices are required.");
         }
 
-        write_off(argv[2], vertices, faces);
+        write_mesh(argv[2], mesh);
     }
     catch( const FormatError& e )
     {
