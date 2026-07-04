@@ -2,15 +2,28 @@
  * Reconstruct a triangle mesh from slice contours written by mesh_slicer.cpp.
  */
 
+#include <CGAL/Constrained_Delaunay_triangulation_2.h>
+#include <CGAL/Delaunay_mesh_face_base_2.h>
+#include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
+#include <CGAL/mark_domain_in_triangulation.h>
+
 #include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+using K = CGAL::Exact_predicates_inexact_constructions_kernel;
+using Point2 = K::Point_2;
+using VertexBase = CGAL::Triangulation_vertex_base_2<K>;
+using FaceBase = CGAL::Delaunay_mesh_face_base_2<K>;
+using TriangulationData = CGAL::Triangulation_data_structure_2<VertexBase, FaceBase>;
+using CDT = CGAL::Constrained_Delaunay_triangulation_2<K, TriangulationData, CGAL::Exact_predicates_tag>;
 
 struct Point
 {
@@ -46,12 +59,73 @@ struct ContourSample
 
 using ContourTrack = std::vector<ContourSample>;
 
+struct CapContour
+{
+    std::vector<std::size_t> ring_ids;
+    Ring ring;
+};
+
+struct Frame
+{
+    Point origin;
+    Point u;
+    Point v;
+};
+
+static Point operator+(const Point& a, const Point& b)
+{
+    Point result = {a.x + b.x, a.y + b.y, a.z + b.z};
+    return result;
+}
+
+static Point operator-(const Point& a, const Point& b)
+{
+    Point result = {a.x - b.x, a.y - b.y, a.z - b.z};
+    return result;
+}
+
+static Point operator*(const Point& a, double scale)
+{
+    Point result = {a.x * scale, a.y * scale, a.z * scale};
+    return result;
+}
+
+static double dot(const Point& a, const Point& b)
+{
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+static Point cross(const Point& a, const Point& b)
+{
+    Point result = {
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x
+    };
+    return result;
+}
+
 static double squared_distance(const Point& a, const Point& b)
 {
     const double dx = a.x - b.x;
     const double dy = a.y - b.y;
     const double dz = a.z - b.z;
     return dx * dx + dy * dy + dz * dz;
+}
+
+static double squared_length(const Point& a)
+{
+    return dot(a, a);
+}
+
+static Point normalized(const Point& a)
+{
+    const double length = std::sqrt(squared_length(a));
+    if( length == 0.0 )
+    {
+        throw std::runtime_error("Zero-length vector.");
+    }
+    return a * (1.0 / length);
 }
 
 static bool same_point(const Point& a, const Point& b)
@@ -92,6 +166,93 @@ static Point centroid(const Ring& ring)
     c.y /= n;
     c.z /= n;
     return c;
+}
+
+static Point ring_normal(const Ring& ring)
+{
+    Point normal = {0.0, 0.0, 0.0};
+    for( std::size_t i = 0; i != ring.size(); ++i )
+    {
+        const Point& current = ring[i];
+        const Point& next = ring[(i + 1) % ring.size()];
+        normal.x += (current.y - next.y) * (current.z + next.z);
+        normal.y += (current.z - next.z) * (current.x + next.x);
+        normal.z += (current.x - next.x) * (current.y + next.y);
+    }
+    return normal;
+}
+
+static Point non_collinear_normal(const Ring& ring)
+{
+    Point normal = ring_normal(ring);
+    if( squared_length(normal) != 0.0 )
+    {
+        return normal;
+    }
+
+    for( std::size_t i = 1; i + 1 < ring.size(); ++i )
+    {
+        normal = cross(ring[i] - ring[0], ring[i + 1] - ring[0]);
+        if( squared_length(normal) != 0.0 )
+        {
+            return normal;
+        }
+    }
+    Point zero = {0.0, 0.0, 0.0};
+    return zero;
+}
+
+static bool make_frame(const std::vector<CapContour>& contours, Frame& frame)
+{
+    for( std::size_t contour = 0; contour != contours.size(); ++contour )
+    {
+        const Ring& ring = contours[contour].ring;
+        if( ring.size() < 3 )
+        {
+            continue;
+        }
+
+        Point normal = non_collinear_normal(ring);
+        if( squared_length(normal) == 0.0 )
+        {
+            continue;
+        }
+        normal = normalized(normal);
+
+        Point u = {0.0, 0.0, 0.0};
+        for( std::size_t i = 1; i != ring.size(); ++i )
+        {
+            u = ring[i] - ring[0];
+            u = u - normal * dot(u, normal);
+            if( squared_length(u) > 0.0 )
+            {
+                break;
+            }
+        }
+        if( squared_length(u) == 0.0 )
+        {
+            continue;
+        }
+        u = normalized(u);
+
+        frame.origin = ring[0];
+        frame.u = u;
+        frame.v = normalized(cross(normal, u));
+        return true;
+    }
+
+    return false;
+}
+
+static Point2 project(const Frame& frame, const Point& point)
+{
+    const Point offset = point - frame.origin;
+    return Point2(dot(offset, frame.u), dot(offset, frame.v));
+}
+
+static Point lift(const Frame& frame, const Point2& point)
+{
+    return frame.origin + frame.u * point.x() + frame.v * point.y();
 }
 
 static Ring shifted_ring(const Ring& ring, std::size_t offset, bool reversed)
@@ -336,33 +497,99 @@ static std::vector<std::size_t> append_ring_vertices(
     return ids;
 }
 
+static void insert_cap_contour(
+    CDT& cdt,
+    const Frame& frame,
+    const CapContour& contour,
+    std::map<CDT::Vertex_handle, std::size_t>& vertex_ids)
+{
+    std::vector<CDT::Vertex_handle> handles;
+    handles.reserve(contour.ring.size());
+
+    for( std::size_t i = 0; i != contour.ring.size(); ++i )
+    {
+        const CDT::Vertex_handle handle = cdt.insert(project(frame, contour.ring[i]));
+        handles.push_back(handle);
+        vertex_ids[handle] = contour.ring_ids[i];
+    }
+
+    for( std::size_t i = 0; i != handles.size(); ++i )
+    {
+        cdt.insert_constraint(handles[i], handles[(i + 1) % handles.size()]);
+    }
+}
+
+static std::size_t cap_vertex_id(
+    const CDT::Vertex_handle& vertex,
+    const Frame& frame,
+    std::map<CDT::Vertex_handle, std::size_t>& vertex_ids,
+    std::vector<Point>& vertices)
+{
+    std::map<CDT::Vertex_handle, std::size_t>::const_iterator found = vertex_ids.find(vertex);
+    if( found != vertex_ids.end() )
+    {
+        return found->second;
+    }
+
+    const std::size_t vertex_id = vertices.size();
+    vertices.push_back(lift(frame, vertex->point()));
+    vertex_ids[vertex] = vertex_id;
+    return vertex_id;
+}
+
 static void add_cap(
-    const std::vector<std::size_t>& ring_ids,
-    const Ring& ring,
+    const std::vector<CapContour>& contours,
     bool reverse,
     std::vector<Point>& vertices,
     std::vector<Face>& faces)
 {
-    const std::size_t center_id = vertices.size();
-    vertices.push_back(centroid(ring));
-
-    for( std::size_t i = 0; i != ring_ids.size(); ++i )
+    if( contours.empty() )
     {
-        const std::size_t next = (i + 1) % ring_ids.size();
-        Face face;
+        return;
+    }
+
+    Frame frame;
+    if( !make_frame(contours, frame) )
+    {
+        throw std::runtime_error("Failed to construct cap frame.");
+    }
+
+    CDT cdt;
+    std::map<CDT::Vertex_handle, std::size_t> vertex_ids;
+    for( std::size_t contour = 0; contour != contours.size(); ++contour )
+    {
+        insert_cap_contour(cdt, frame, contours[contour], vertex_ids);
+    }
+
+    if( cdt.dimension() != 2 )
+    {
+        throw std::runtime_error("Failed to triangulate cap.");
+    }
+
+    CGAL::mark_domain_in_triangulation(cdt);
+    for( CDT::Finite_faces_iterator face = cdt.finite_faces_begin();
+         face != cdt.finite_faces_end();
+         ++face )
+    {
+        if( !face->is_in_domain() )
+        {
+            continue;
+        }
+
+        Face output;
         if( reverse )
         {
-            face.vertices.push_back(center_id);
-            face.vertices.push_back(ring_ids[next]);
-            face.vertices.push_back(ring_ids[i]);
+            output.vertices.push_back(cap_vertex_id(face->vertex(0), frame, vertex_ids, vertices));
+            output.vertices.push_back(cap_vertex_id(face->vertex(2), frame, vertex_ids, vertices));
+            output.vertices.push_back(cap_vertex_id(face->vertex(1), frame, vertex_ids, vertices));
         }
         else
         {
-            face.vertices.push_back(center_id);
-            face.vertices.push_back(ring_ids[i]);
-            face.vertices.push_back(ring_ids[next]);
+            output.vertices.push_back(cap_vertex_id(face->vertex(0), frame, vertex_ids, vertices));
+            output.vertices.push_back(cap_vertex_id(face->vertex(1), frame, vertex_ids, vertices));
+            output.vertices.push_back(cap_vertex_id(face->vertex(2), frame, vertex_ids, vertices));
         }
-        faces.push_back(face);
+        faces.push_back(output);
     }
 }
 
@@ -472,12 +699,18 @@ int main(int argc, char* argv[])
                 ring_ids.push_back(append_ring_vertices(track[t].ring, vertices));
             }
 
-            add_cap(ring_ids.front(), track.front().ring, true, vertices, faces);
+            CapContour front_cap;
+            front_cap.ring_ids = ring_ids.front();
+            front_cap.ring = track.front().ring;
+            add_cap(std::vector<CapContour>(1, front_cap), true, vertices, faces);
             for( std::size_t t = 0; t + 1 != track.size(); ++t )
             {
                 add_surface_between(ring_ids[t], track[t].ring, ring_ids[t + 1], track[t + 1].ring, faces);
             }
-            add_cap(ring_ids.back(), track.back().ring, false, vertices, faces);
+            CapContour back_cap;
+            back_cap.ring_ids = ring_ids.back();
+            back_cap.ring = track.back().ring;
+            add_cap(std::vector<CapContour>(1, back_cap), false, vertices, faces);
         }
 
         if( faces.empty() )
