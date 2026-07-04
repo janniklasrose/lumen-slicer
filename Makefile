@@ -1,10 +1,10 @@
 # by default, compile only
 .PHONY: default
-default: bin/mesh_slicer
+default: bin/mesh_slicer bin/tessellate_slices
 
 .PHONY: clean
 clean:
-	$(RM) bin/mesh_slicer
+	$(RM) bin/mesh_slicer bin/tessellate_slices
 
 # compile the executables
 CGAL_INSTALL_PREFIX ?= /opt/homebrew
@@ -24,12 +24,15 @@ PYTHON ?= python3
 	$(PYTHON) bin/removeDuplicatedVertex.py $< $@
 
 .PHONY: demo
-demo: demo/slices.dat
+demo: demo/slices.dat demo/slices.off
 
 # ======= FORMAT FOR TARGETS =======
 #output: executable meshfile centrelinefile
 #	./$^ $@   # this works due to the order of arguments and above dependencies
 
-# demo with cylinder
+# convert cylinder to slices
 demo/slices.dat: bin/mesh_slicer demo/cylinder.off demo/centreline.dat
+	./$^ $@
+# tessellate the slices
+demo/slices.off: bin/tessellate_slices demo/slices.dat
 	./$^ $@
