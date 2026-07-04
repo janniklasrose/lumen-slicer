@@ -15,9 +15,11 @@ LDLIBS = -lgmp -lmpfr
 bin/mesh_slicer: src/mesh_slicer.cpp
 	$(CXX) $(CXXFLAGS) -I$(CGAL_INC_DIR) $< -o $@ -L$(CGAL_LIB_DIR) $(LDFLAGS) $(LDLIBS)
 
-# convert STL to OFF using MeshLab
+# convert STL to OFF using PyMeshLab
+PYTHON ?= python3
+
 %.off: %.stl
-	meshlabserver -i $< -o $@ -s bin/removeDuplicatedVertex.mlx
+	$(PYTHON) bin/removeDuplicatedVertex.py $< $@
 
 # ======= FORMAT FOR TARGETS =======
 #output: executable meshfile centrelinefile
