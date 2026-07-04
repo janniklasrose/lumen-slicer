@@ -25,9 +25,15 @@ struct Face
 
 using Ring = std::vector<Point>;
 
+struct Contour
+{
+    double area;
+    Ring ring;
+};
+
 struct Slice
 {
-    std::vector<Ring> contours;
+    std::vector<Contour> contours;
 };
 
 static double squared_distance(const Point& a, const Point& b)
@@ -171,8 +177,9 @@ static std::vector<Slice> read_slices(const std::string& path)
                 throw std::runtime_error("Failed to read contour header.");
             }
 
-            Ring ring;
-            ring.reserve(npoints);
+            Contour contour;
+            contour.area = area;
+            contour.ring.reserve(npoints);
             for( std::size_t i = 0; i != npoints; ++i )
             {
                 Point p;
@@ -181,18 +188,18 @@ static std::vector<Slice> read_slices(const std::string& path)
                 {
                     throw std::runtime_error("Failed to read contour point.");
                 }
-                ring.push_back(p);
+                contour.ring.push_back(p);
             }
 
-            remove_duplicate_endpoint(ring);
-            if( ring.size() < 3 )
+            remove_duplicate_endpoint(contour.ring);
+            if( contour.ring.size() < 3 )
             {
                 std::ostringstream msg;
                 msg << "Contour " << c << " in slice " << t << " has fewer than 3 points.";
                 throw std::runtime_error(msg.str());
             }
 
-            slices[t].contours.push_back(ring);
+            slices[t].contours.push_back(contour);
         }
     }
 
@@ -217,7 +224,7 @@ static std::vector<std::vector<Ring> > group_contours(std::vector<Slice>& slices
                 continue;
             }
 
-            Ring ring = slices[t].contours[contour];
+            Ring ring = slices[t].contours[contour].ring;
             if( !groups[contour].empty() )
             {
                 ring = best_aligned_ring(groups[contour].back(), ring);
