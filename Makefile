@@ -6,7 +6,7 @@ default: bin/mesh_slicer
 clean:
 	$(RM) -f bin/mesh_slicer
 
-# compile the slicing executable
+# compile the executables
 CGAL_INSTALL_PREFIX ?= /opt/homebrew
 CGAL_INC_DIR = $(CGAL_INSTALL_PREFIX)/include
 CGAL_LIB_DIR = $(CGAL_INSTALL_PREFIX)/lib
@@ -14,7 +14,7 @@ CXXFLAGS = -O2 -std=c++17
 LDFLAGS = -Wl,-rpath,$(CGAL_LIB_DIR)
 LDLIBS = -lgmp -lmpfr
 
-bin/mesh_slicer: src/mesh_slicer.cpp
+bin/%: src/%.cpp
 	$(CXX) $(CXXFLAGS) -I$(CGAL_INC_DIR) $< -o $@ -L$(CGAL_LIB_DIR) $(LDFLAGS) $(LDLIBS)
 
 # convert STL to OFF using PyMeshLab
