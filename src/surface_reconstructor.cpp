@@ -8,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -56,6 +57,16 @@ static void remove_duplicate_endpoint(Ring& ring)
     {
         ring.pop_back();
     }
+}
+
+static std::size_t read_count(std::istream& in, const std::string& description)
+{
+    long long value = 0;
+    if( !(in >> value) || value < 0 )
+    {
+        throw std::runtime_error("Invalid " + description + ".");
+    }
+    return static_cast<std::size_t>(value);
 }
 
 static Point centroid(const Ring& ring)
@@ -148,34 +159,23 @@ static std::vector<Slice> read_slices(const std::string& path)
         throw std::runtime_error("Invalid slice file.");
     }
 
-    std::size_t nslices = 0;
-    in >> nslices;
-    if( !in )
-    {
-        throw std::runtime_error("Failed to read slice count.");
-    }
+    const std::size_t nslices = read_count(in, "slice count");
 
     std::vector<Slice> slices(nslices);
     for( std::size_t t = 0; t != nslices; ++t )
     {
-        std::size_t ncontours = 0;
-        in >> ncontours;
-        if( !in )
-        {
-            throw std::runtime_error("Failed to read contour count.");
-        }
+        const std::size_t ncontours = read_count(in, "contour count");
 
         slices[t].contours.reserve(ncontours);
         for( std::size_t c = 0; c != ncontours; ++c )
         {
             double area = 0.0;
-            std::size_t npoints = 0;
             in >> area;
-            in >> npoints;
             if( !in )
             {
-                throw std::runtime_error("Failed to read contour header.");
+                throw std::runtime_error("Invalid contour area.");
             }
+            const std::size_t npoints = read_count(in, "point count");
 
             Contour contour;
             contour.area = area;
