@@ -12,7 +12,9 @@
 #include <array>
 #include <cmath>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -304,6 +306,7 @@ static void write_off(const std::string& path, const MeshOut& mesh)
 
     out << "OFF\n";
     out << mesh.vertices.size() << " " << mesh.faces.size() << " 0\n";
+    out << std::setprecision(std::numeric_limits<double>::max_digits10);
     for(const Vec3& vertex : mesh.vertices)
     {
         out << vertex.x << " " << vertex.y << " " << vertex.z << "\n";
