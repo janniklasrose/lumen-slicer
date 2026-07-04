@@ -37,6 +37,15 @@ struct Slice
     std::vector<Contour> contours;
 };
 
+struct ContourSample
+{
+    std::size_t slice_index;
+    double area;
+    Ring ring;
+};
+
+using ContourTrack = std::vector<ContourSample>;
+
 static double squared_distance(const Point& a, const Point& b)
 {
     const double dx = a.x - b.x;
@@ -151,6 +160,24 @@ static Ring best_aligned_ring(const Ring& previous, const Ring& current)
     return shifted_ring(current, best_offset, best_reversed);
 }
 
+static int area_class(double area)
+{
+    return area < 0.0 ? -1 : 1;
+}
+
+static double contour_match_score(const ContourSample& previous, const Contour& current)
+{
+    const Point previous_center = centroid(previous.ring);
+    const Point current_center = centroid(current.ring);
+    const double previous_radius = std::sqrt(std::fabs(previous.area));
+    const double current_radius = std::sqrt(std::fabs(current.area));
+    const double scale = std::max(std::max(previous_radius, current_radius), 1e-12);
+    const double center_score = squared_distance(previous_center, current_center) / (scale * scale);
+    const double radius_delta = previous_radius - current_radius;
+    const double area_score = (radius_delta * radius_delta) / (scale * scale);
+    return center_score + area_score;
+}
+
 static std::vector<Slice> read_slices(const std::string& path)
 {
     std::ifstream in(path.c_str());
@@ -206,34 +233,93 @@ static std::vector<Slice> read_slices(const std::string& path)
     return slices;
 }
 
-static std::vector<std::vector<Ring> > group_contours(std::vector<Slice>& slices)
+static std::vector<ContourTrack> group_contours(const std::vector<Slice>& slices)
 {
-    std::size_t max_contours = 0;
+    struct Candidate
+    {
+        double score;
+        std::size_t active_index;
+        std::size_t contour_index;
+    };
+
+    std::vector<ContourTrack> tracks;
+    std::vector<std::size_t> active_tracks;
+
     for( std::size_t t = 0; t != slices.size(); ++t )
     {
-        max_contours = std::max(max_contours, slices[t].contours.size());
-    }
-
-    std::vector<std::vector<Ring> > groups(max_contours);
-    for( std::size_t contour = 0; contour != max_contours; ++contour )
-    {
-        for( std::size_t t = 0; t != slices.size(); ++t )
+        const std::vector<Contour>& contours = slices[t].contours;
+        std::vector<Candidate> candidates;
+        for( std::size_t active = 0; active != active_tracks.size(); ++active )
         {
-            if( contour >= slices[t].contours.size() )
+            const ContourSample& previous = tracks[active_tracks[active]].back();
+            for( std::size_t contour = 0; contour != contours.size(); ++contour )
+            {
+                if( area_class(previous.area) != area_class(contours[contour].area) )
+                {
+                    continue;
+                }
+                Candidate candidate;
+                candidate.score = contour_match_score(previous, contours[contour]);
+                candidate.active_index = active;
+                candidate.contour_index = contour;
+                candidates.push_back(candidate);
+            }
+        }
+
+        std::sort(candidates.begin(), candidates.end(),
+            [](const Candidate& a, const Candidate& b)
+            {
+                return a.score < b.score;
+            });
+
+        std::vector<bool> used_active(active_tracks.size(), false);
+        std::vector<bool> used_contours(contours.size(), false);
+        std::vector<std::size_t> next_active_tracks;
+
+        for( std::size_t i = 0; i != candidates.size(); ++i )
+        {
+            const Candidate& candidate = candidates[i];
+            if( used_active[candidate.active_index] || used_contours[candidate.contour_index] )
             {
                 continue;
             }
 
-            Ring ring = slices[t].contours[contour].ring;
-            if( !groups[contour].empty() )
-            {
-                ring = best_aligned_ring(groups[contour].back(), ring);
-            }
-            groups[contour].push_back(ring);
+            const std::size_t track_index = active_tracks[candidate.active_index];
+            const ContourSample& previous = tracks[track_index].back();
+            const Contour& contour = contours[candidate.contour_index];
+
+            ContourSample sample;
+            sample.slice_index = t;
+            sample.area = contour.area;
+            sample.ring = best_aligned_ring(previous.ring, contour.ring);
+            tracks[track_index].push_back(sample);
+
+            used_active[candidate.active_index] = true;
+            used_contours[candidate.contour_index] = true;
+            next_active_tracks.push_back(track_index);
         }
+
+        for( std::size_t contour = 0; contour != contours.size(); ++contour )
+        {
+            if( used_contours[contour] )
+            {
+                continue;
+            }
+
+            ContourTrack track;
+            ContourSample sample;
+            sample.slice_index = t;
+            sample.area = contours[contour].area;
+            sample.ring = contours[contour].ring;
+            track.push_back(sample);
+            tracks.push_back(track);
+            next_active_tracks.push_back(tracks.size() - 1);
+        }
+
+        active_tracks = next_active_tracks;
     }
 
-    return groups;
+    return tracks;
 }
 
 static std::vector<std::size_t> append_ring_vertices(
@@ -366,32 +452,32 @@ int main(int argc, char* argv[])
     try
     {
         std::vector<Slice> slices = read_slices(argv[1]);
-        std::vector<std::vector<Ring> > contour_groups = group_contours(slices);
+        std::vector<ContourTrack> contour_tracks = group_contours(slices);
 
         std::vector<Point> vertices;
         std::vector<Face> faces;
 
-        for( std::size_t contour = 0; contour != contour_groups.size(); ++contour )
+        for( std::size_t contour = 0; contour != contour_tracks.size(); ++contour )
         {
-            const std::vector<Ring>& rings = contour_groups[contour];
-            if( rings.size() < 2 )
+            const ContourTrack& track = contour_tracks[contour];
+            if( track.size() < 2 )
             {
                 continue;
             }
 
             std::vector<std::vector<std::size_t> > ring_ids;
-            ring_ids.reserve(rings.size());
-            for( std::size_t t = 0; t != rings.size(); ++t )
+            ring_ids.reserve(track.size());
+            for( std::size_t t = 0; t != track.size(); ++t )
             {
-                ring_ids.push_back(append_ring_vertices(rings[t], vertices));
+                ring_ids.push_back(append_ring_vertices(track[t].ring, vertices));
             }
 
-            add_cap(ring_ids.front(), rings.front(), true, vertices, faces);
-            for( std::size_t t = 0; t + 1 != rings.size(); ++t )
+            add_cap(ring_ids.front(), track.front().ring, true, vertices, faces);
+            for( std::size_t t = 0; t + 1 != track.size(); ++t )
             {
-                add_surface_between(ring_ids[t], rings[t], ring_ids[t + 1], rings[t + 1], faces);
+                add_surface_between(ring_ids[t], track[t].ring, ring_ids[t + 1], track[t + 1].ring, faces);
             }
-            add_cap(ring_ids.back(), rings.back(), false, vertices, faces);
+            add_cap(ring_ids.back(), track.back().ring, false, vertices, faces);
         }
 
         if( faces.empty() )
