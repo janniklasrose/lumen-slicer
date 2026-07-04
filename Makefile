@@ -1,6 +1,8 @@
 # by default, compile only
+.PHONY: default
 default: bin/mesh_slicer
 
+.PHONY: clean
 clean:
 	$(RM) -f bin/mesh_slicer
 
@@ -21,12 +23,13 @@ PYTHON ?= python3
 %.off: %.stl
 	$(PYTHON) bin/removeDuplicatedVertex.py $< $@
 
+.PHONY: demo
+demo: demo/slices.dat
+
 # ======= FORMAT FOR TARGETS =======
 #output: executable meshfile centrelinefile
 #	./$^ $@   # this works due to the order of arguments and above dependencies
 
 # demo with cylinder
-.PHONY: demo
-demo: demo/slices.dat
 demo/slices.dat: bin/mesh_slicer demo/cylinder.off demo/centreline.dat
 	./$^ $@
