@@ -683,6 +683,8 @@ int main(int argc, char* argv[])
 
         std::vector<Point> vertices;
         std::vector<Face> faces;
+        std::map<std::size_t, std::vector<CapContour> > start_caps;
+        std::map<std::size_t, std::vector<CapContour> > end_caps;
 
         for( std::size_t contour = 0; contour != contour_tracks.size(); ++contour )
         {
@@ -702,7 +704,7 @@ int main(int argc, char* argv[])
             CapContour front_cap;
             front_cap.ring_ids = ring_ids.front();
             front_cap.ring = track.front().ring;
-            add_cap(std::vector<CapContour>(1, front_cap), true, vertices, faces);
+            start_caps[track.front().slice_index].push_back(front_cap);
             for( std::size_t t = 0; t + 1 != track.size(); ++t )
             {
                 add_surface_between(ring_ids[t], track[t].ring, ring_ids[t + 1], track[t + 1].ring, faces);
@@ -710,7 +712,20 @@ int main(int argc, char* argv[])
             CapContour back_cap;
             back_cap.ring_ids = ring_ids.back();
             back_cap.ring = track.back().ring;
-            add_cap(std::vector<CapContour>(1, back_cap), false, vertices, faces);
+            end_caps[track.back().slice_index].push_back(back_cap);
+        }
+
+        for( std::map<std::size_t, std::vector<CapContour> >::const_iterator cap = start_caps.begin();
+             cap != start_caps.end();
+             ++cap )
+        {
+            add_cap(cap->second, true, vertices, faces);
+        }
+        for( std::map<std::size_t, std::vector<CapContour> >::const_iterator cap = end_caps.begin();
+             cap != end_caps.end();
+             ++cap )
+        {
+            add_cap(cap->second, false, vertices, faces);
         }
 
         if( faces.empty() )
