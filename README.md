@@ -35,7 +35,6 @@ make
 - `tessellate_slices slices.dat slices.off` converts slice contours into a tessellated OFF mesh.
   - Pass `--refine` to `tessellate_slices` to enable CGAL mesh refinement with default criteria.
 - `surface_reconstructor slices.dat mesh.off` reconstructs an OFF triangle mesh from the slice contours written by `mesh_slicer`.
-  - The surface reconstructor connects contours with the same index in consecutive slices, aligns each contour to the previous one by rotation/reversal, triangulates each space between neighbouring slices locally, and caps the first and last contours. This is intended for ordered lumen-like slices; branching surfaces or changing contour topology need preprocessing into separate contour sequences.
 
 ## Demo
 
