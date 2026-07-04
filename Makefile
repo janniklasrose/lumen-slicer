@@ -1,10 +1,10 @@
 # by default, compile only
 .PHONY: default
-default: bin/mesh_slicer bin/tessellate_slices
+default: bin/mesh_slicer bin/tessellate_slices bin/surface_reconstructor
 
 .PHONY: clean
 clean:
-	$(RM) bin/mesh_slicer bin/tessellate_slices
+	$(RM) bin/mesh_slicer bin/tessellate_slices bin/surface_reconstructor
 
 # compile the executables
 CGAL_INSTALL_PREFIX ?= /opt/homebrew
@@ -24,7 +24,7 @@ PYTHON ?= python3
 	$(PYTHON) bin/removeDuplicatedVertex.py $< $@
 
 .PHONY: demo
-demo: demo/slices.dat demo/slices.off
+demo: demo/slices.dat demo/slices.off demo/reconstructed.off
 
 # ======= FORMAT FOR TARGETS =======
 #output: executable meshfile centrelinefile
@@ -35,4 +35,7 @@ demo/slices.dat: bin/mesh_slicer demo/cylinder.off demo/centreline.dat
 	./$^ $@
 # tessellate the slices
 demo/slices.off: bin/tessellate_slices demo/slices.dat
+	./$^ $@
+# reconstruct the outer surface from the slices
+demo/reconstructed.off: bin/surface_reconstructor demo/slices.dat
 	./$^ $@
