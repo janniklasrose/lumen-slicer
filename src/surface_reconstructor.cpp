@@ -219,10 +219,11 @@ static double alignment_score(const Ring& a, const Ring& b, std::size_t offset, 
 
     for( std::size_t k = 0; k != comparisons; ++k )
     {
-        const std::size_t bidx = reversed
-            ? (offset + b.size() - k) % b.size()
-            : (offset + k) % b.size();
         const std::size_t aidx = (k * a.size()) / comparisons;
+        const std::size_t bstep = (k * b.size()) / comparisons;
+        const std::size_t bidx = reversed
+            ? (offset + b.size() - bstep) % b.size()
+            : (offset + bstep) % b.size();
         score += squared_distance(a[aidx], b[bidx]);
     }
 
