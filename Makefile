@@ -1,24 +1,35 @@
 # by default, compile only
+.PHONY: default
 default: bin/mesh_slicer
 
+.PHONY: clean
 clean:
-	$(RM) -f bin/mesh_slicer
+	$(RM) bin/mesh_slicer
 
-# compile the slicing executable
-CXXFLAGS = -O2 -std=c++11
-bin/mesh_slicer: src/mesh_slicer.cpp
-	$(CXX) $(CXXFLAGS) $< -o $@ -lCGAL -lgmp
+# compile the executables
+CGAL_INSTALL_PREFIX ?= /opt/homebrew
+CGAL_INC_DIR = $(CGAL_INSTALL_PREFIX)/include
+CGAL_LIB_DIR = $(CGAL_INSTALL_PREFIX)/lib
+CXXFLAGS = -O2 -std=c++17
+LDFLAGS = -Wl,-rpath,$(CGAL_LIB_DIR)
+LDLIBS = -lgmp -lmpfr
 
-# convert STL to OFF using MeshLab
+bin/%: src/%.cpp
+	$(CXX) $(CXXFLAGS) -I$(CGAL_INC_DIR) $< -o $@ -L$(CGAL_LIB_DIR) $(LDFLAGS) $(LDLIBS)
+
+# convert STL to OFF using PyMeshLab
+PYTHON ?= python3
+
 %.off: %.stl
-	meshlabserver -i $< -o $@ -s bin/removeDuplicatedVertex.mlx
+	$(PYTHON) bin/removeDuplicatedVertex.py $< $@
+
+.PHONY: demo
+demo: demo/slices.dat
 
 # ======= FORMAT FOR TARGETS =======
 #output: executable meshfile centrelinefile
 #	./$^ $@   # this works due to the order of arguments and above dependencies
 
 # demo with cylinder
-.PHONY: demo
-demo: demo/slices.dat
 demo/slices.dat: bin/mesh_slicer demo/cylinder.off demo/centreline.dat
 	./$^ $@
