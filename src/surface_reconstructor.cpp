@@ -72,6 +72,14 @@ struct Frame
     Point v;
 };
 
+struct FormatError : public std::runtime_error
+{
+    explicit FormatError(const std::string& message)
+        : std::runtime_error(message)
+    {
+    }
+};
+
 static Point operator+(const Point& a, const Point& b)
 {
     Point result = {a.x + b.x, a.y + b.y, a.z + b.z};
@@ -147,7 +155,7 @@ static std::size_t read_count(std::istream& in, const std::string& description)
     long long value = 0;
     if( !(in >> value) || value < 0 )
     {
-        throw std::runtime_error("Invalid " + description + ".");
+        throw FormatError("Invalid " + description + ".");
     }
     return static_cast<std::size_t>(value);
 }
@@ -344,7 +352,7 @@ static std::vector<Slice> read_slices(const std::string& path)
     std::ifstream in(path.c_str());
     if( !in )
     {
-        throw std::runtime_error("Invalid slice file.");
+        throw FormatError("Invalid slice file.");
     }
 
     const std::size_t nslices = read_count(in, "slice count");
@@ -361,7 +369,7 @@ static std::vector<Slice> read_slices(const std::string& path)
             in >> area;
             if( !in )
             {
-                throw std::runtime_error("Invalid contour area.");
+                throw FormatError("Invalid contour area.");
             }
             const std::size_t npoints = read_count(in, "point count");
 
@@ -384,7 +392,7 @@ static std::vector<Slice> read_slices(const std::string& path)
             {
                 std::ostringstream msg;
                 msg << "Contour " << c << " in slice " << t << " has fewer than 3 points.";
-                throw std::runtime_error(msg.str());
+                throw FormatError(msg.str());
             }
 
             slices[t].contours.push_back(contour);
@@ -644,7 +652,7 @@ static void write_off(
     std::ofstream out(path.c_str());
     if( !out )
     {
-        throw std::runtime_error("Invalid output file.");
+        throw FormatError("Invalid output file.");
     }
 
     out << "OFF\n";
@@ -734,6 +742,11 @@ int main(int argc, char* argv[])
         }
 
         write_off(argv[2], vertices, faces);
+    }
+    catch( const FormatError& e )
+    {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return 1;
     }
     catch( const std::exception& e )
     {
